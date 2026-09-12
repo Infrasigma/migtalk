@@ -25,16 +25,40 @@ The evaluator must not provide a success gradient, expected action, target decom
 
 ## Independently enforceable resources
 
-Scientific resource accounting is restricted to quantities the evaluator can enforce from outside the child processes:
+Scientific resource accounting is restricted to quantities that are externally enforceable:
 
 - wall-clock time;
 - interaction count;
 - sealed artifact size;
 - evaluator-mediated frame/output size.
 
-The evaluator must **not** claim independent enforcement of CPU instructions, memory residency, storage/search effort, or internal adaptation work from self-reported child telemetry. Those dimensions require a separate host-level instrumentation/sandbox contract and are therefore outside this executable evaluator's admission claim.
+CPU and memory are **not** accepted as self-reported telemetry. A scientific host must place the evaluator itself in a precommitted cgroup v2 with finite CPU and memory ceilings. The evaluator verifies that it is actually executing inside that cgroup and fails closed otherwise. The cgroup configuration is part of the frozen scientific execution environment and must be independently audited.
 
-A scientific run may use only the enforceable resource vector unless an independently audited host instrumentation layer is added and frozen separately.
+Search effort, disk I/O, disk capacity, GPU/TPU use, and internal adaptation remain outside this evaluator's independently measured resource vector unless a separately audited host layer is added.
+
+## Process isolation requirements
+
+Every capability/challenge execution must use a fresh Linux sandbox with:
+
+- user namespace with a root mapping only to the invoking evaluator UID/GID;
+- mount namespace;
+- network namespace;
+- IPC namespace;
+- PID namespace;
+- private process group and parent-death termination;
+- private ephemeral chroot containing only the sealed executable;
+- no inherited environment beyond a minimal fixed environment;
+- statically linked ELF executable only.
+
+The sandbox intentionally provides no network interface connecting capability to challenge, no shared host `/tmp`, `/dev/shm`, user home, or arbitrary host filesystem, and no shared IPC namespace. Each execution receives a distinct ephemeral root directory destroyed after termination.
+
+The evaluator must fail closed if the host cannot create the required namespaces or the required cgroup contract.
+
+## Hash blindness
+
+Artifact SHA-256 values are used only for commitment verification by the evaluator. The evaluator must never pass capability or challenge hashes, artifact filenames, target IDs, challenge ordering metadata, or other identifying metadata into child arguments, environment variables, or generic protocol frames.
+
+Inside the sandbox, the sealed executable is exposed only at the fixed path `/payload`. Capability and challenge are placed in distinct sandboxes, so neither side can observe the other's artifact path or filesystem.
 
 ## Process rules
 
@@ -42,14 +66,15 @@ The evaluator must:
 
 1. verify exact SHA-256 of the capability artifact;
 2. verify exact SHA-256 of the challenge artifact;
-3. execute capability and challenge as separately controlled child processes;
-4. isolate their process groups and clean descendants on termination;
-5. route only generic protocol frames between them;
-6. enforce precommitted wall-clock and interaction ceilings externally;
-7. bound artifact and mediated-output sizes externally;
-8. prevent capability-local state from crossing fresh challenge boundaries unless persistence is explicitly being tested;
-9. expose only aggregate scientific results to the learner harness;
-10. fail closed on malformed frames, hash mismatch, unexpected output, process failure/escape, or resource overrun.
+3. reject non-ELF or dynamically linked artifacts;
+4. execute capability and challenge as separately controlled sandboxed child processes;
+5. isolate their process groups and clean descendants on termination;
+6. route only generic protocol frames between them;
+7. enforce precommitted wall-clock and interaction ceilings externally;
+8. bound artifact and mediated-output sizes externally;
+9. prevent capability-local state from crossing fresh challenge boundaries unless persistence is explicitly being tested;
+10. expose only aggregate scientific results to the learner harness;
+11. fail closed on malformed frames, hash mismatch, unexpected output, process failure/escape, namespace failure, cgroup failure, or resource overrun.
 
 ## Independence boundary
 
@@ -65,6 +90,7 @@ Admission still requires:
 - exact frozen evaluator SHA-256;
 - evaluator-side adversarial tests;
 - concrete semantic-independence audit;
+- independently audited Linux sandbox and cgroup configuration;
 - review/approval by an auditor who did not implement the ACE learner/environment.
 
 No ACE source, binary, environment implementation, model implementation, learner state, or hidden ACE task semantics may be imported or reused by the evaluator.
