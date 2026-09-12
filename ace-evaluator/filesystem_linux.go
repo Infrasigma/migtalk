@@ -11,7 +11,8 @@ import (
     "unsafe"
 )
 
-const sandboxStorageBytes = 64 << 20
+const sandboxStorageBytes = 16 << 20
+const sandboxStorageInodes = 1024
 
 func mountPrivateRoot() error {
     if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
@@ -24,8 +25,8 @@ func mountBoundedTmpfs(path string) error {
     if err := os.MkdirAll(path, 0700); err != nil {
         return fmt.Errorf("create new root: %w", err)
     }
-    opts := fmt.Sprintf("size=%d,mode=0700,nosuid,nodev", sandboxStorageBytes)
-    if err := syscall.Mount("tmpfs", path, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, opts); err != nil {
+    opts := fmt.Sprintf("size=%d,nr_inodes=%d,mode=0700,nosuid,nodev,noexec", sandboxStorageBytes, sandboxStorageInodes)
+    if err := syscall.Mount("tmpfs", path, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC, opts); err != nil {
         return fmt.Errorf("mount bounded tmpfs: %w", err)
     }
     return nil
@@ -46,7 +47,7 @@ func pivotInto(path string) error {
         return fmt.Errorf("pivot_root: %w", err)
     }
     if err := syscall.Chdir("/"); err != nil {
-        return fmt.Errorf("chdir new /: %w", err)
+        return fmt.Errorf("chdir new root: %w", err)
     }
     if err := syscall.Unmount("/.oldroot", syscall.MNT_DETACH); err != nil {
         return fmt.Errorf("detach old root: %w", err)
