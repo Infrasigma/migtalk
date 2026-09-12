@@ -91,7 +91,8 @@ jobs:
 
           set +e
           (
-            echo "$$" > "$child/cgroup.procs"
+            echo "$BASHPID" > "$child/cgroup.procs"
+            test "$(awk -F: '$1 == \"0\" {print $3}' /proc/self/cgroup)" = "${ACE_CGROUP_V2_PATH}/ace-scientific-workload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             exec env \
               ACE_RUN_SANDBOX_TESTS="$ACE_RUN_SANDBOX_TESTS" \
               ACE_REQUIRE_CGROUP="$ACE_REQUIRE_CGROUP" \
