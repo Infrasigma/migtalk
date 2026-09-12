@@ -1,0 +1,61 @@
+name: ACE scientific sandbox admission
+
+on:
+  workflow_dispatch:
+    inputs:
+      cgroup_path:
+        description: 'Absolute cgroup-v2 path containing the evaluator process'
+        required: true
+        type: string
+      run_adversarial_tests:
+        description: 'Run production-path namespace/filesystem adversarial tests'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  scientific-sandbox-admission:
+    # Scientific admission must run only on an explicitly provisioned Linux host
+    # that can expose the required cgroup-v2 delegation. A standard GitHub-hosted
+    # runner is not an acceptable substitute for the frozen production contract.
+    runs-on: [self-hosted, linux, ace-cgroup-v2]
+    defaults:
+      run:
+        working-directory: ace-evaluator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.6'
+          cache-dependency-path: ace-evaluator/go.mod
+
+      - name: Verify cgroup-v2 scientific host contract
+        env:
+          ACE_REQUIRE_CGROUP: '1'
+          ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
+        run: |
+          set -eu
+          echo "Checking evaluator host cgroup contract"
+          test -r /proc/self/cgroup
+          test -d /sys/fs/cgroup
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cpu.max"
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.max"
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max"
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/pids.max"
+          grep -Fqx "0::${ACE_CGROUP_V2_PATH}" /proc/self/cgroup
+          test "$(cat "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max")" = "0"
+          go test ./... -run 'TestValidateScientificCgroup' -count=1
+
+      - name: Run production-path adversarial sandbox tests
+        if: ${{ inputs.run_adversarial_tests }}
+        env:
+          ACE_RUN_SANDBOX_TESTS: '1'
+          ACE_REQUIRE_CGROUP: '1'
+          ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
+        run: |
+          set -eu
+          CGO_ENABLED=0 go test ./... -run 'TestSandboxAdversarialFilesystemAndBlindness' -count=1 -v
+
+      - name: Refuse scientific admission without verified boundary
+        run: |
+          echo "Scientific admission remains unauthorized unless the cgroup and runtime sandbox tests above succeed."
