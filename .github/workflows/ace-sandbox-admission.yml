@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       run_adversarial_tests:
-        description: 'Run production-path namespace/filesystem adversarial tests'
+        description: 'Run production-path adversarial tests'
         required: true
         default: true
         type: boolean
@@ -16,7 +16,7 @@ on:
 jobs:
   scientific-sandbox-admission:
     # Scientific admission must run only on an explicitly provisioned Linux host
-    # that can expose the required cgroup-v2 delegation. A standard GitHub-hosted
+    # that can expose the required cgroup-v2 contract. A standard GitHub-hosted
     # runner is not an acceptable substitute for the frozen production contract.
     runs-on: [self-hosted, linux, ace-cgroup-v2]
     defaults:
@@ -35,7 +35,6 @@ jobs:
           ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
         run: |
           set -eu
-          echo "Checking evaluator host cgroup contract"
           test -r /proc/self/cgroup
           test -d /sys/fs/cgroup
           test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cpu.max"
@@ -46,16 +45,40 @@ jobs:
           test "$(cat "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max")" = "0"
           go test ./... -run 'TestValidateScientificCgroup' -count=1
 
+      - name: Run machine-verifiable kernel admission probe
+        env:
+          ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
+          ACE_EVIDENCE_DIR: ${{ github.workspace }}/ace-evidence
+        run: |
+          set -eu
+          ../ace-evaluator/scripts/validate-ace-host.sh "$ACE_CGROUP_V2_PATH"
+
+      - name: Build exact evaluator executable
+        run: |
+          set -eu
+          CGO_ENABLED=0 go build -trimpath -buildvcs=true -o "$RUNNER_TEMP/ace-evaluator" .
+          sha256sum "$RUNNER_TEMP/ace-evaluator" | tee "$GITHUB_WORKSPACE/ace-evidence/evaluator.sha256"
+
       - name: Run production-path adversarial sandbox tests
         if: ${{ inputs.run_adversarial_tests }}
         env:
           ACE_RUN_SANDBOX_TESTS: '1'
           ACE_REQUIRE_CGROUP: '1'
           ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
+          ACE_SANDBOX_EXECUTABLE: ${{ runner.temp }}/ace-evaluator
         run: |
           set -eu
-          CGO_ENABLED=0 go test ./... -run 'TestSandboxAdversarialFilesystemAndBlindness' -count=1 -v
+          CGO_ENABLED=0 go test ./... -run '^TestSandboxAdversarialFilesystemAndBlindness$' -count=1 -v
+
+      - name: Publish physical validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ace-physical-admission-${{ github.run_id }}
+          path: ace-evidence
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Refuse scientific admission without verified boundary
         run: |
-          echo "Scientific admission remains unauthorized unless the cgroup and runtime sandbox tests above succeed."
+          echo "Scientific admission remains unauthorized unless every required host and production-path test above succeeds."
