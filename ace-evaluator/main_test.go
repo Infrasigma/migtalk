@@ -14,10 +14,10 @@ func hash(b []byte) string {
 }
 
 func TestEvaluateMediatesOpaqueFrames(t *testing.T) {
-	capability := artifact("IFS= read -r frame; printf '%s\\n' '{\"kind\":\"action\",\"body\":{\"opaque\":true}}'")
+	capability := artifact("while IFS= read -r frame; do case \"$frame\" in *'\\\"kind\\\":\\\"observation\\\"'*) printf '%s\\n' '{\"kind\":\"action\",\"body\":{\"opaque\":true}}' ;; esac; done")
 	challenge := artifact("printf '%s\\n' '{\"kind\":\"observation\",\"body\":{\"opaque\":true}}'; IFS= read -r action; printf '%s\\n' '{\"kind\":\"result\",\"body\":{\"passed\":true}}'")
 	r := request{Protocol: protocol, Plan: "plan", Capability: capability, CapabilityHash: hash(capability), Challenge: challenge, ChallengeHash: hash(challenge), WallClockNS: 2_000_000_000, InteractionBudget: 1}
-	got := evaluate(r)
+	got := evaluateForTest(r)
 	if got.Error != "" || !got.Passed || got.Interactions != 1 { t.Fatalf("unexpected result: %+v", got) }
 }
 
@@ -25,13 +25,13 @@ func TestEvaluateRejectsArtifactTampering(t *testing.T) {
 	capability := artifact("printf '%s\\n' '{\"kind\":\"action\"}'")
 	challenge := artifact("printf '%s\\n' '{\"kind\":\"result\",\"body\":{\"passed\":true}}'")
 	r := request{Protocol: protocol, Plan: "plan", Capability: capability, CapabilityHash: hash(append(capability, 'x')), Challenge: challenge, ChallengeHash: hash(challenge), WallClockNS: 1_000_000_000, InteractionBudget: 1}
-	if got := evaluate(r); got.Error != "capability artifact hash mismatch" { t.Fatalf("expected hash rejection, got %+v", got) }
+	if got := evaluateForTest(r); got.Error != "capability artifact hash mismatch" { t.Fatalf("expected hash rejection, got %+v", got) }
 }
 
 func TestEvaluateEnforcesInteractionBudget(t *testing.T) {
-	capability := artifact("IFS= read -r frame; printf '%s\\n' '{\"kind\":\"action\"}'")
+	capability := artifact("while IFS= read -r frame; do printf '%s\\n' '{\"kind\":\"action\"}'; done")
 	challenge := artifact("printf '%s\\n' '{\"kind\":\"observation\"}'; IFS= read -r action; printf '%s\\n' '{\"kind\":\"observation\"}'")
 	r := request{Protocol: protocol, Plan: "plan", Capability: capability, CapabilityHash: hash(capability), Challenge: challenge, ChallengeHash: hash(challenge), WallClockNS: 2_000_000_000, InteractionBudget: 1}
-	got := evaluate(r)
+	got := evaluateForTest(r)
 	if got.Error != "interaction budget exceeded" { t.Fatalf("expected interaction rejection, got %+v", got) }
 }
