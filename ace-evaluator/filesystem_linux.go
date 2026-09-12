@@ -8,6 +8,7 @@ import (
     "os"
     "path/filepath"
     "syscall"
+    "unsafe"
 )
 
 const sandboxStorageBytes = 64 << 20
@@ -23,7 +24,7 @@ func mountBoundedTmpfs(path string) error {
     if err := os.MkdirAll(path, 0700); err != nil {
         return fmt.Errorf("create new root: %w", err)
     }
-    opts := fmt.Sprintf("size=%d,mode=0700,nosuid,nodev,noexec", sandboxStorageBytes)
+    opts := fmt.Sprintf("size=%d,mode=0700,nosuid,nodev", sandboxStorageBytes)
     if err := syscall.Mount("tmpfs", path, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, opts); err != nil {
         return fmt.Errorf("mount bounded tmpfs: %w", err)
     }
@@ -57,29 +58,32 @@ func pivotInto(path string) error {
 }
 
 func rawPivotRoot(newRoot, putOld string) error {
-    _, _, errno := syscall.Syscall6(syscall.SYS_PIVOT_ROOT, uintptr(unsafeStringPtr(newRoot)), uintptr(unsafeStringPtr(putOld)), 0, 0, 0, 0)
+    newBuf := append([]byte(newRoot), 0)
+    oldBuf := append([]byte(putOld), 0)
+    _, _, errno := syscall.Syscall6(
+        syscall.SYS_PIVOT_ROOT,
+        uintptr(unsafe.Pointer(&newBuf[0])),
+        uintptr(unsafe.Pointer(&oldBuf[0])),
+        0, 0, 0, 0,
+    )
     if errno != 0 {
         return errno
     }
     return nil
 }
 
-// unsafeStringPtr converts a Go string to a syscall pointer without retaining it.
-// The strings passed to rawPivotRoot remain live for the duration of the syscall.
-func unsafeStringPtr(s string) uintptr {
-    return uintptr((*[2]uintptr)(nil)[0]) + uintptr(len(s)) - uintptr(len(s))
-}
-
-func setupSandboxFilesystem(hostArtifact string) (func(), error) {
-    if hostArtifact == "" || filepath.IsAbs(hostArtifact) == false {
-        return nil, errors.New("sandbox artifact path must be an absolute host path")
+// setupSandboxFilesystem runs after the child enters its private user and
+// mount namespaces. The new root is a bounded tmpfs containing only payload.
+func setupSandboxFilesystem(hostArtifact string) error {
+    if hostArtifact == "" || !filepath.IsAbs(hostArtifact) {
+        return errors.New("sandbox artifact path must be an absolute host path")
     }
     if err := mountPrivateRoot(); err != nil {
-        return nil, err
+        return err
     }
     newRoot, err := os.MkdirTemp("/tmp", "ace-sbx-root-")
     if err != nil {
-        return nil, err
+        return err
     }
     mounted := false
     cleanup := func() {
@@ -90,27 +94,27 @@ func setupSandboxFilesystem(hostArtifact string) (func(), error) {
     }
     if err := mountBoundedTmpfs(newRoot); err != nil {
         cleanup()
-        return nil, err
+        return err
     }
     mounted = true
-    payload := filepath.Join(newRoot, "payload")
+
     data, err := os.ReadFile(hostArtifact)
     if err != nil {
         cleanup()
-        return nil, fmt.Errorf("read sealed artifact: %w", err)
+        return fmt.Errorf("read sealed artifact: %w", err)
     }
     if len(data) == 0 || len(data) > maxArtifactBytes {
         cleanup()
-        return nil, errors.New("sealed artifact size out of bounds")
+        return errors.New("sealed artifact size out of bounds")
     }
+    payload := filepath.Join(newRoot, "payload")
     if err := os.WriteFile(payload, data, 0700); err != nil {
         cleanup()
-        return nil, fmt.Errorf("populate sandbox payload: %w", err)
+        return fmt.Errorf("populate sandbox payload: %w", err)
     }
     if err := pivotInto(newRoot); err != nil {
         cleanup()
-        return nil, err
+        return err
     }
-    cleanup = func() {}
-    return func() {}, nil
+    return nil
 }
