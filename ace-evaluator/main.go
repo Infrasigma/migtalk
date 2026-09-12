@@ -26,21 +26,21 @@ type frame struct {
 }
 
 type request struct {
-	Protocol string `json:"protocol_version"`
-	Plan string `json:"plan_commitment"`
-	Capability []byte `json:"capability_artifact"`
-	CapabilityHash string `json:"capability_artifact_sha256"`
-	Challenge []byte `json:"challenge_artifact"`
-	ChallengeHash string `json:"challenge_artifact_sha256"`
-	WallClockNS uint64 `json:"wall_clock_ns"`
-	InteractionBudget uint64 `json:"interaction_budget"`
+	Protocol            string `json:"protocol_version"`
+	Plan                string `json:"plan_commitment"`
+	Capability          []byte `json:"capability_artifact"`
+	CapabilityHash      string `json:"capability_artifact_sha256"`
+	Challenge           []byte `json:"challenge_artifact"`
+	ChallengeHash       string `json:"challenge_artifact_sha256"`
+	WallClockNS         uint64 `json:"wall_clock_ns"`
+	InteractionBudget   uint64 `json:"interaction_budget"`
 }
 
 type response struct {
-	Passed bool `json:"passed"`
+	Passed       bool   `json:"passed"`
 	Interactions uint64 `json:"interactions"`
-	WallClockNS uint64 `json:"wall_clock_ns"`
-	Error string `json:"error,omitempty"`
+	WallClockNS  uint64 `json:"wall_clock_ns"`
+	Error        string `json:"error,omitempty"`
 }
 
 func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
@@ -59,8 +59,6 @@ func writeTempExecutable(b []byte) (string, error) {
 }
 
 func startIsolated(cmd *exec.Cmd) error {
-	// Put each child in its own process group so timeout/failure cleanup can
-	// terminate descendants rather than leaving an escape process behind.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	return cmd.Start()
 }
@@ -71,11 +69,7 @@ func killProcessGroup(cmd *exec.Cmd) {
 	_ = cmd.Process.Kill()
 }
 
-// runInteraction starts fresh capability and challenge processes for one
-// challenge. The evaluator interprets only frame kinds; observation and
-// action bodies remain opaque. The challenge executable is the semantic
-// authority and initiates each episode by emitting an observation frame.
-func runInteraction(ctx context.Context, r request) (bool, uint64, error) {
+func runInteraction(ctx context.Context, r request, sandbox bool) (bool, uint64, error) {
 	capPath, err := writeTempExecutable(r.Capability)
 	if err != nil { return false, 0, err }
 	defer os.Remove(capPath)
@@ -83,16 +77,28 @@ func runInteraction(ctx context.Context, r request) (bool, uint64, error) {
 	if err != nil { return false, 0, err }
 	defer os.Remove(chalPath)
 
-	capCmd := exec.CommandContext(ctx, capPath)
-	chalCmd := exec.CommandContext(ctx, chalPath)
-	capIn, err := capCmd.StdinPipe(); if err != nil { return false, 0, err }
-	capOut, err := capCmd.StdoutPipe(); if err != nil { return false, 0, err }
-	chalIn, err := chalCmd.StdinPipe(); if err != nil { return false, 0, err }
-	chalOut, err := chalCmd.StdoutPipe(); if err != nil { return false, 0, err }
+	var capCmd, chalCmd *exec.Cmd
+	var capCleanup, chalCleanup func()
+	if sandbox {
+		capCmd, capCleanup, err = newSandboxedCommand(ctx, r.Capability, capPath)
+		if err != nil { return false, 0, fmt.Errorf("prepare capability sandbox: %w", err) }
+		chalCmd, chalCleanup, err = newSandboxedCommand(ctx, r.Challenge, chalPath)
+		if err != nil { capCleanup(); return false, 0, fmt.Errorf("prepare challenge sandbox: %w", err) }
+	} else {
+		capCmd = exec.CommandContext(ctx, capPath)
+		chalCmd = exec.CommandContext(ctx, chalPath)
+		capCleanup = func() {}
+		chalCleanup = func() {}
+	}
+
+	capIn, err := capCmd.StdinPipe(); if err != nil { capCleanup(); chalCleanup(); return false, 0, err }
+	capOut, err := capCmd.StdoutPipe(); if err != nil { capCleanup(); chalCleanup(); return false, 0, err }
+	chalIn, err := chalCmd.StdinPipe(); if err != nil { capCleanup(); chalCleanup(); return false, 0, err }
+	chalOut, err := chalCmd.StdoutPipe(); if err != nil { capCleanup(); chalCleanup(); return false, 0, err }
 	capCmd.Stderr = io.Discard; chalCmd.Stderr = io.Discard
-	if err := startIsolated(capCmd); err != nil { return false, 0, fmt.Errorf("start capability: %w", err) }
-	if err := startIsolated(chalCmd); err != nil { killProcessGroup(capCmd); _ = capCmd.Wait(); return false, 0, fmt.Errorf("start challenge: %w", err) }
-	defer func() { _ = capIn.Close(); _ = chalIn.Close(); killProcessGroup(capCmd); killProcessGroup(chalCmd); _ = capCmd.Wait(); _ = chalCmd.Wait() }()
+	if err := startIsolated(capCmd); err != nil { capCleanup(); chalCleanup(); return false, 0, fmt.Errorf("start capability: %w", err) }
+	if err := startIsolated(chalCmd); err != nil { killProcessGroup(capCmd); _ = capCmd.Wait(); capCleanup(); chalCleanup(); return false, 0, fmt.Errorf("start challenge: %w", err) }
+	defer func() { _ = capIn.Close(); _ = chalIn.Close(); killProcessGroup(capCmd); killProcessGroup(chalCmd); _ = capCmd.Wait(); _ = chalCmd.Wait(); capCleanup(); chalCleanup() }()
 
 	capDec := json.NewDecoder(io.LimitReader(bufio.NewReader(capOut), maxChildOutputBytes)); capEnc := json.NewEncoder(capIn)
 	chalDec := json.NewDecoder(io.LimitReader(bufio.NewReader(chalOut), maxChildOutputBytes)); chalEnc := json.NewEncoder(chalIn)
@@ -123,14 +129,37 @@ func runInteraction(ctx context.Context, r request) (bool, uint64, error) {
 	}
 }
 
+func validateScienceHost() error {
+	if os.Getenv("ACE_REQUIRE_CGROUP") != "1" {
+		return errors.New("scientific execution requires ACE_REQUIRE_CGROUP=1")
+	}
+	required := os.Getenv("ACE_CGROUP_V2_PATH")
+	if required == "" { return errors.New("scientific execution requires ACE_CGROUP_V2_PATH") }
+	data, err := os.ReadFile("/proc/self/cgroup"); if err != nil { return fmt.Errorf("read cgroup membership: %w", err) }
+	line := strings.TrimSpace(string(data))
+	if line != "0::"+required { return fmt.Errorf("evaluator is not in required cgroup: got %q want %q", line, "0::"+required) }
+	root := "/sys/fs/cgroup" + required
+	cpu, err := os.ReadFile(root+"/cpu.max"); if err != nil { return fmt.Errorf("read cpu.max: %w", err) }
+	mem, err := os.ReadFile(root+"/memory.max"); if err != nil { return fmt.Errorf("read memory.max: %w", err) }
+	if strings.TrimSpace(string(cpu)) == "max 100000" || strings.TrimSpace(string(mem)) == "max" { return errors.New("scientific cgroup has unlimited CPU or memory") }
+	return nil
+}
+
 func evaluate(r request) response {
+	if err := validateScienceHost(); err != nil { return response{Error: "scientific host boundary rejected: " + err.Error()} }
+	return evaluateInternal(r, true)
+}
+
+func evaluateForTest(r request) response { return evaluateInternal(r, false) }
+
+func evaluateInternal(r request, sandbox bool) response {
 	if r.Protocol != protocol { return response{Error: "unsupported protocol"} }
 	if !validHash(digest(r.Capability), r.CapabilityHash) { return response{Error: "capability artifact hash mismatch"} }
 	if !validHash(digest(r.Challenge), r.ChallengeHash) { return response{Error: "challenge artifact hash mismatch"} }
 	if r.WallClockNS == 0 || r.InteractionBudget == 0 { return response{Error: "invalid resource budget"} }
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.WallClockNS)); defer cancel()
 	started := time.Now()
-	passed, interactions, err := runInteraction(ctx, r)
+	passed, interactions, err := runInteraction(ctx, r, sandbox)
 	elapsed := time.Since(started)
 	if err != nil { return response{Error: err.Error(), Interactions: interactions, WallClockNS: uint64(elapsed.Nanoseconds())} }
 	if ctx.Err() != nil { return response{Error: "wall-clock budget exceeded", Interactions: interactions, WallClockNS: uint64(elapsed.Nanoseconds())} }
