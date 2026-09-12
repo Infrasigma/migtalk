@@ -1,40 +1,55 @@
-# ACE Independent Evaluator — Executable Capability Contract
+# ACE Independent Evaluator — Executable Challenge/Capability Contract
 
 This document fixes the evaluator-side interpretation of the neutral executable ABI without importing the ACE learner implementation.
 
-## Capability artifact
+## Two executable artifacts
 
-The sealed artifact is an executable byte sequence. The evaluator must verify its SHA-256 against the sealed artifact commitment before execution.
+The protocol now commits **both** sides of the interaction:
 
-The evaluator must execute the artifact as a separate child process. It must not interpret the artifact as a repo-local DSL, inspect its internal model representation, or translate it into a task-specific intermediate language.
+1. a sealed capability executable supplied by the learner harness;
+2. a sealed challenge executable supplied by the evaluation harness.
+
+Both are verified by exact SHA-256 before execution. The challenge executable owns hidden challenge semantics and its verification logic. This prevents the independent evaluator from needing ACE's environment implementation or a task-specific DSL.
+
+Neither artifact may be interpreted as a repository-local DSL or translated into a task-specific intermediate language.
 
 ## Wire boundary
 
-The evaluator and capability exchange newline-delimited JSON messages using the committed execution protocol version `stdin-stdout-json-v1`.
+The evaluator consumes newline-delimited JSON using protocol `ACE-BLIND-2`.
 
-The semantic fields are opaque byte payloads at this boundary:
+Each request contains:
 
-- observation: sequence number, payload, terminal flag;
-- goal: payload;
-- action: payload plus termination flag.
+- plan commitment;
+- capability subject and exact capability artifact bytes;
+- challenge commitment;
+- exact challenge artifact bytes;
+- challenge artifact SHA-256.
 
-The evaluator supplies only the observation and goal required by the frozen challenge. It does not send a success gradient, expected action, target decomposition, hidden state, target identifier, or learner feedback.
+Observation, goal, and action payloads are opaque to the evaluator. The evaluator merely mediates the separately controlled processes according to this contract.
+
+The evaluator must not provide a success gradient, expected action, target decomposition, hidden state, target identifier, or learner feedback.
 
 ## Process rules
 
 The evaluator must:
 
-1. materialize only the hash-committed artifact bytes;
-2. execute exactly those bytes in a separately controlled process;
-3. enforce the precommitted resource ceilings from outside the capability process;
-4. discard capability-local state between independently defined fresh-state challenges unless persistence is explicitly being tested;
-5. record per-challenge outcomes internally but expose only the aggregate protocol result to the learner harness;
-6. fail closed on malformed frames, artifact hash mismatch, unexpected output, process escape, or resource overrun.
+1. verify the exact SHA-256 of the capability artifact;
+2. verify the exact SHA-256 of the challenge artifact;
+3. execute capability and challenge as separately controlled child processes;
+4. route only generic protocol frames between them;
+5. enforce precommitted resource ceilings from outside the capability process;
+6. prevent capability-local state from crossing fresh-state challenge boundaries unless persistence is explicitly being tested;
+7. expose only aggregate scientific results to the learner harness;
+8. fail closed on malformed frames, hash mismatch, unexpected output, process escape, or resource overrun.
 
-## Scientific boundary
+## Independence boundary
+
+The evaluator contains no ACE environment semantics. The challenge artifact is the executable semantic authority for its own hidden state, goal, dynamics, and verification. The evaluator therefore does not need to reconstruct those semantics from an ACE implementation.
+
+## Scientific admission
 
 This file defines transport/execution mechanics only. It is **not** an evaluator admission certificate.
 
-Scientific admission additionally requires independently reconstructed challenge semantics, adversarial tests for leakage/replay/stored answers/representation tricks/resource lies, a separately built executable with frozen SHA-256, and an independent semantic audit.
+Admission still requires an independently built evaluator executable, adversarial evaluator-side tests, reproducible build provenance, exact executable SHA-256, and an independent semantic audit.
 
-No ACE source, binary, environment implementation, model implementation, or learner state may be imported or reused by the evaluator.
+No ACE source, binary, environment implementation, model implementation, learner state, or hidden ACE task semantics may be imported or reused by the evaluator.
