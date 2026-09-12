@@ -24,53 +24,109 @@ type frame struct {
 
 type request struct {
 	Protocol string `json:"protocol_version"`
-	Plan     string `json:"plan_commitment"`
-	Artifact []byte `json:"capability_artifact"`
-	Hash     string `json:"capability_artifact_sha256"`
+	Plan string `json:"plan_commitment"`
+	Capability []byte `json:"capability_artifact"`
+	CapabilityHash string `json:"capability_artifact_sha256"`
 	Challenge []byte `json:"challenge_artifact"`
 	ChallengeHash string `json:"challenge_artifact_sha256"`
-	Budget budget `json:"budget"`
+	WallClockNS uint64 `json:"wall_clock_ns"`
+	InteractionBudget uint64 `json:"interaction_budget"`
 }
 
-type budget struct { WallClockNS int64 `json:"wall_clock_ns"`; Interactions int64 `json:"interactions"` }
-
-type result struct { Passed bool `json:"passed"`; Error string `json:"error,omitempty"`; Usage map[string]int64 `json:"usage,omitempty"` }
-
-func digest(b []byte) string { h:=sha256.Sum256(b); return hex.EncodeToString(h[:]) }
-func validHash(got, want string) bool { return strings.EqualFold(got,want) && len(want)==64 }
-
-func runArtifact(ctx context.Context, artifact []byte, expected string, input []byte) ([]byte,error) {
-	if !validHash(digest(artifact),expected) { return nil,errors.New("artifact hash mismatch") }
-	f,err:=os.CreateTemp("","ace-evaluator-artifact-*"); if err!=nil{return nil,err}; path:=f.Name(); defer os.Remove(path)
-	if _,err=f.Write(artifact); err!=nil { f.Close(); return nil,err }; if err=f.Close(); err!=nil{return nil,err}
-	if err=os.Chmod(path,0700); err!=nil{return nil,err}
-	cmd:=exec.CommandContext(ctx,path); cmd.Stdin=strings.NewReader(string(input)); out,err:=cmd.Output(); if ctx.Err()!=nil{return nil,ctx.Err()}; if err!=nil{return nil,fmt.Errorf("artifact execution failed: %w",err)}
-	return out,nil
+type response struct {
+	Passed bool `json:"passed"`
+	Interactions uint64 `json:"interactions"`
+	WallClockNS uint64 `json:"wall_clock_ns"`
+	Error string `json:"error,omitempty"`
 }
 
-func evaluate(r request) result {
-	if r.Protocol!=protocol{return result{Error:"unsupported protocol"}}
-	if !validHash(digest(r.Artifact),r.Hash){return result{Error:"capability artifact hash mismatch"}}
-	if !validHash(digest(r.Challenge),r.ChallengeHash){return result{Error:"challenge artifact hash mismatch"}}
-	if r.Budget.WallClockNS<=0 || r.Budget.Interactions<=0{return result{Error:"invalid resource budget"}}
-	ctx,cancel:=context.WithTimeout(context.Background(),time.Duration(r.Budget.WallClockNS)); defer cancel()
-	// The evaluator never interprets challenge semantics. It only launches the
-	// sealed challenge executable and passes opaque capability bytes to it.
-	challengeInput:=r.Artifact
-	out,err:=runArtifact(ctx,r.Challenge,r.ChallengeHash,challengeInput); if err!=nil{return result{Error:err.Error()}}
-	// Challenge output is an evaluator-neutral JSON result. No per-challenge
-	// information is returned to the learner harness beyond the final boolean.
-	var cr struct{Passed bool `json:"passed"`}; if err:=json.Unmarshal(out,&cr);err!=nil{return result{Error:"malformed challenge result"}}
-	return result{Passed:cr.Passed,Usage:map[string]int64{"interactions":1,"wall_clock_ns":time.Since(time.Now()).Nanoseconds()}}
+func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(h[:]) }
+func validHash(got, want string) bool { return len(want) == 64 && strings.EqualFold(got, want) }
+
+func writeTempExecutable(b []byte) (string, error) {
+	f, err := os.CreateTemp("", "ace-evaluator-artifact-*")
+	if err != nil { return "", err }
+	path := f.Name()
+	defer func() { _ = f.Close() }()
+	if _, err := f.Write(b); err != nil { _ = os.Remove(path); return "", err }
+	if err := f.Close(); err != nil { _ = os.Remove(path); return "", err }
+	if err := os.Chmod(path, 0700); err != nil { _ = os.Remove(path); return "", err }
+	return path, nil
 }
 
-func main(){
-	s:=bufio.NewScanner(os.Stdin); s.Buffer(make([]byte,1024),4<<20)
-	enc:=json.NewEncoder(os.Stdout)
-	for s.Scan(){
-		var r request; if err:=json.Unmarshal(s.Bytes(),&r);err!=nil { enc.Encode(result{Error:"malformed request"}); continue }
-		if len(r.Artifact)==0||len(r.Challenge)==0 {enc.Encode(result{Error:"missing artifact"});continue}
-		enc.Encode(evaluate(r))
+// runInteraction starts fresh capability and challenge processes for one
+// challenge. The evaluator interprets only frame kinds; observation, goal,
+// and action bodies remain opaque. The challenge executable is the semantic
+// authority and initiates each episode by emitting an observation frame.
+func runInteraction(ctx context.Context, r request) (bool, uint64, error) {
+	capPath, err := writeTempExecutable(r.Capability)
+	if err != nil { return false, 0, err }
+	defer os.Remove(capPath)
+	chalPath, err := writeTempExecutable(r.Challenge)
+	if err != nil { return false, 0, err }
+	defer os.Remove(chalPath)
+
+	capCmd := exec.CommandContext(ctx, capPath)
+	chalCmd := exec.CommandContext(ctx, chalPath)
+	capIn, err := capCmd.StdinPipe(); if err != nil { return false, 0, err }
+	capOut, err := capCmd.StdoutPipe(); if err != nil { return false, 0, err }
+	chalIn, err := chalCmd.StdinPipe(); if err != nil { return false, 0, err }
+	chalOut, err := chalCmd.StdoutPipe(); if err != nil { return false, 0, err }
+	capCmd.Stderr = io.Discard; chalCmd.Stderr = io.Discard
+	if err := capCmd.Start(); err != nil { return false, 0, fmt.Errorf("start capability: %w", err) }
+	if err := chalCmd.Start(); err != nil { _ = capCmd.Process.Kill(); _ = capCmd.Wait(); return false, 0, fmt.Errorf("start challenge: %w", err) }
+	defer func() { _ = capIn.Close(); _ = chalIn.Close(); _ = capCmd.Process.Kill(); _ = chalCmd.Process.Kill(); _ = capCmd.Wait(); _ = chalCmd.Wait() }()
+
+	capDec := json.NewDecoder(bufio.NewReader(capOut)); capEnc := json.NewEncoder(capIn)
+	chalDec := json.NewDecoder(bufio.NewReader(chalOut)); chalEnc := json.NewEncoder(chalIn)
+	var interactions uint64
+
+	for {
+		var cf frame
+		if err := chalDec.Decode(&cf); err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) { return false, interactions, errors.New("wall-clock budget exceeded") }
+			return false, interactions, fmt.Errorf("challenge frame: %w", err)
+		}
+		switch cf.Kind {
+		case "observation":
+			if r.InteractionBudget > 0 && interactions >= r.InteractionBudget { return false, interactions, errors.New("interaction budget exceeded") }
+			if err := capEnc.Encode(cf); err != nil { return false, interactions, fmt.Errorf("forward observation: %w", err) }
+			var af frame
+			if err := capDec.Decode(&af); err != nil { return false, interactions, fmt.Errorf("capability frame: %w", err) }
+			if af.Kind != "action" { return false, interactions, errors.New("capability emitted non-action frame") }
+			if err := chalEnc.Encode(af); err != nil { return false, interactions, fmt.Errorf("forward action: %w", err) }
+			interactions++
+		case "result":
+			var body struct { Passed bool `json:"passed"` }
+			if err := json.Unmarshal(cf.Body, &body); err != nil { return false, interactions, errors.New("malformed challenge result") }
+			return body.Passed, interactions, nil
+		default:
+			return false, interactions, fmt.Errorf("unsupported challenge frame kind %q", cf.Kind)
+		}
 	}
-	if err:=s.Err();err!=nil && !errors.Is(err,io.EOF){os.Exit(2)}
+}
+
+func evaluate(r request) response {
+	if r.Protocol != protocol { return response{Error: "unsupported protocol"} }
+	if !validHash(digest(r.Capability), r.CapabilityHash) { return response{Error: "capability artifact hash mismatch"} }
+	if !validHash(digest(r.Challenge), r.ChallengeHash) { return response{Error: "challenge artifact hash mismatch"} }
+	if r.WallClockNS == 0 || r.InteractionBudget == 0 { return response{Error: "invalid resource budget"} }
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(r.WallClockNS)); defer cancel()
+	started := time.Now()
+	passed, interactions, err := runInteraction(ctx, r)
+	elapsed := time.Since(started)
+	if err != nil { return response{Error: err.Error(), Interactions: interactions, WallClockNS: uint64(elapsed.Nanoseconds())} }
+	if ctx.Err() != nil { return response{Error: "wall-clock budget exceeded", Interactions: interactions, WallClockNS: uint64(elapsed.Nanoseconds())} }
+	return response{Passed: passed, Interactions: interactions, WallClockNS: uint64(elapsed.Nanoseconds())}
+}
+
+func main() {
+	s := bufio.NewScanner(os.Stdin); s.Buffer(make([]byte, 1024), 16<<20)
+	enc := json.NewEncoder(os.Stdout)
+	for s.Scan() {
+		var r request
+		if err := json.Unmarshal(s.Bytes(), &r); err != nil { _ = enc.Encode(response{Error: "malformed request"}); continue }
+		_ = enc.Encode(evaluate(r))
+	}
+	if err := s.Err(); err != nil && !errors.Is(err, io.EOF) { os.Exit(2) }
 }
