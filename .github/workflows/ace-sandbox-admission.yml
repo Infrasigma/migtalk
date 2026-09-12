@@ -1,0 +1,57 @@
+name: ACE scientific sandbox admission
+
+on:
+  workflow_dispatch:
+    inputs:
+      cgroup_path:
+        description: 'Absolute cgroup-v2 path containing the evaluator process'
+        required: true
+        type: string
+      run_adversarial_tests:
+        description: 'Run production-path namespace/filesystem adversarial tests'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  scientific-sandbox-admission:
+    # This job is intentionally separate from ordinary CI. It MUST run on a
+    # Linux runner where the precommitted cgroup-v2 contract is actually active.
+    # Do not replace this with a CI bypass when the host cannot satisfy it.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ace-evaluator
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.6'
+          cache-dependency-path: ace-evaluator/go.mod
+
+      - name: Verify cgroup-v2 scientific host contract
+        env:
+          ACE_REQUIRE_CGROUP: '1'
+          ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
+        run: |
+          echo "Checking evaluator host cgroup contract"
+          test -r /proc/self/cgroup
+          test -d /sys/fs/cgroup
+          go test ./... -run 'TestValidateScientificCgroup' -count=1
+          if ! grep -q "0::${ACE_CGROUP_V2_PATH}$" /proc/self/cgroup; then
+            echo "SCIENTIFIC SANDBOX UNAVAILABLE: evaluator job is not running inside the requested cgroup"
+            exit 1
+          fi
+
+      - name: Run production-path adversarial sandbox tests
+        if: ${{ inputs.run_adversarial_tests }}
+        env:
+          ACE_RUN_SANDBOX_TESTS: '1'
+          ACE_REQUIRE_CGROUP: '1'
+          ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
+        run: |
+          CGO_ENABLED=0 go test ./... -run 'TestSandboxAdversarialFilesystemAndBlindness' -count=1 -v
+
+      - name: Refuse scientific admission without verified boundary
+        run: |
+          echo "Scientific admission remains unauthorized unless the cgroup and runtime sandbox tests above succeed."
