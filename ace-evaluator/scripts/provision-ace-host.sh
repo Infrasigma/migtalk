@@ -65,6 +65,7 @@ mkdir -p "$DROPIN_DIR"
 cat >"${DROPIN_DIR}/10-ace-evaluator.conf" <<EOF
 [Service]
 Slice=${SLICE}
+Delegate=yes
 EOF
 
 systemctl daemon-reload
@@ -85,6 +86,8 @@ ROOT="/sys/fs/cgroup${CGROUP_PATH}"
 [[ -r "$ROOT/memory.max" ]] || fail "missing memory.max at $ROOT"
 [[ -r "$ROOT/memory.swap.max" ]] || fail "missing memory.swap.max at $ROOT"
 [[ -r "$ROOT/pids.max" ]] || fail "missing pids.max at $ROOT"
+[[ -w "$ROOT/cgroup.procs" ]] || fail "runner cgroup is not writable by delegated runner service"
+[[ -w "$ROOT/cgroup.subtree_control" ]] || fail "runner cgroup does not expose delegated controller management"
 [[ "$(cat "$ROOT/memory.swap.max")" == 0 ]] || fail "swap is not disabled"
 [[ "$(awk '{print $1}' "$ROOT/memory.max")" != max ]] || fail "memory is unlimited"
 [[ "$(awk '{print $1}' "$ROOT/cpu.max")" != max ]] || fail "CPU is unlimited"
@@ -100,5 +103,7 @@ cpu.max=$(cat "$ROOT/cpu.max")
 memory.max=$(cat "$ROOT/memory.max")
 memory.swap.max=$(cat "$ROOT/memory.swap.max")
 pids.max=$(cat "$ROOT/pids.max")
+delegate=yes
+workload_boundary=delegated-child-cgroup
 next=run ace-evaluator/scripts/validate-ace-host.sh ${CGROUP_PATH}
 EOF
