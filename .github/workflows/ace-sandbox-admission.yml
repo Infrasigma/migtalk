@@ -43,6 +43,9 @@ jobs:
           test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/pids.max"
           grep -Fqx "0::${ACE_CGROUP_V2_PATH}" /proc/self/cgroup
           test "$(cat "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max")" = "0"
+          test "$(awk '{print $1}' "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cpu.max")" != max
+          test "$(awk '{print $1}' "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.max")" != max
+          test "$(awk '{print $1}' "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/pids.max")" != max
           go test ./... -run 'TestValidateScientificCgroup' -count=1
 
       - name: Run machine-verifiable kernel admission probe
@@ -51,7 +54,7 @@ jobs:
           ACE_EVIDENCE_DIR: ${{ github.workspace }}/ace-evidence
         run: |
           set -eu
-          ../ace-evaluator/scripts/validate-ace-host.sh "$ACE_CGROUP_V2_PATH"
+          ./scripts/validate-ace-host.sh "$ACE_CGROUP_V2_PATH"
 
       - name: Build exact evaluator executable
         run: |
@@ -74,7 +77,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ace-physical-admission-${{ github.run_id }}
+          name: ace-physical-admission-${{ github.run_id }}-${{ github.run_attempt }}
           path: ace-evidence
           if-no-files-found: error
           retention-days: 14
