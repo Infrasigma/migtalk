@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       cgroup_path:
-        description: 'Absolute cgroup-v2 path containing the evaluator process'
+        description: 'Absolute cgroup-v2 path containing the runner service'
         required: true
         type: string
       run_adversarial_tests:
@@ -16,8 +16,8 @@ on:
 jobs:
   scientific-sandbox-admission:
     # Scientific admission must run only on an explicitly provisioned Linux host
-    # that can expose the required cgroup-v2 contract. A standard GitHub-hosted
-    # runner is not an acceptable substitute for the frozen production contract.
+    # with a delegated finite cgroup boundary. A GitHub-hosted runner is not a
+    # substitute for the frozen production contract.
     runs-on: [self-hosted, linux, ace-cgroup-v2]
     defaults:
       run:
@@ -41,6 +41,8 @@ jobs:
           test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.max"
           test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max"
           test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/pids.max"
+          test -w "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cgroup.procs"
+          test -w "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cgroup.subtree_control"
           grep -Fqx "0::${ACE_CGROUP_V2_PATH}" /proc/self/cgroup
           test "$(cat "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max")" = "0"
           test "$(awk '{print $1}' "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cpu.max")" != max
@@ -59,10 +61,11 @@ jobs:
       - name: Build exact evaluator executable
         run: |
           set -eu
+          mkdir -p "$GITHUB_WORKSPACE/ace-evidence"
           CGO_ENABLED=0 go build -trimpath -buildvcs=true -o "$RUNNER_TEMP/ace-evaluator" .
           sha256sum "$RUNNER_TEMP/ace-evaluator" | tee "$GITHUB_WORKSPACE/ace-evidence/evaluator.sha256"
 
-      - name: Run production-path adversarial sandbox tests
+      - name: Run production-path adversarial sandbox tests in isolated child cgroup
         if: ${{ inputs.run_adversarial_tests }}
         env:
           ACE_RUN_SANDBOX_TESTS: '1'
@@ -71,7 +74,35 @@ jobs:
           ACE_SANDBOX_EXECUTABLE: ${{ runner.temp }}/ace-evaluator
         run: |
           set -eu
-          CGO_ENABLED=0 go test ./... -run '^TestSandboxAdversarialFilesystemAndBlindness$' -count=1 -v
+          parent="/sys/fs/cgroup${ACE_CGROUP_V2_PATH}"
+          child="${parent}/ace-scientific-workload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir "$child"
+          cleanup() { rmdir "$child" 2>/dev/null || true; }
+          trap cleanup EXIT
+
+          # The runner service remains in the parent cgroup. Only the destructive
+          # evaluator/test process is moved into this delegated child boundary,
+          # so an intentional memory/PID/resource exhaustion cannot kill the CI
+          # runner and turn the observation into a failure-domain ambiguity.
+          printf '%s' '100000 100000' > "$child/cpu.max"
+          printf '%s' '1073741824' > "$child/memory.max"
+          printf '%s' '0' > "$child/memory.swap.max"
+          printf '%s' '256' > "$child/pids.max"
+
+          set +e
+          (
+            echo "$$" > "$child/cgroup.procs"
+            exec env \
+              ACE_RUN_SANDBOX_TESTS="$ACE_RUN_SANDBOX_TESTS" \
+              ACE_REQUIRE_CGROUP="$ACE_REQUIRE_CGROUP" \
+              ACE_CGROUP_V2_PATH="$ACE_CGROUP_V2_PATH" \
+              ACE_SANDBOX_EXECUTABLE="$ACE_SANDBOX_EXECUTABLE" \
+              CGO_ENABLED=0 go test ./... -run '^TestSandboxAdversarialFilesystemAndBlindness$' -count=1 -v
+          )
+          status=$?
+          set -e
+          echo "isolated_workload_exit_status=${status}"
+          test "$status" -eq 0
 
       - name: Publish physical validation evidence
         if: always()
