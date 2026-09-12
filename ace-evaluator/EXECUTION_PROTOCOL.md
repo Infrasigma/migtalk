@@ -34,31 +34,32 @@ Scientific resource accounting is restricted to quantities that are externally e
 
 CPU and memory are **not** accepted as self-reported telemetry. A scientific host must place the evaluator itself in a precommitted cgroup v2 with finite CPU and memory ceilings. The evaluator verifies that it is actually executing inside that cgroup and fails closed otherwise. The cgroup configuration is part of the frozen scientific execution environment and must be independently audited.
 
-Search effort, disk I/O, disk capacity, GPU/TPU use, and internal adaptation remain outside this evaluator's independently measured resource vector unless a separately audited host layer is added.
+Search effort, disk I/O, GPU/TPU use, and internal adaptation remain outside this evaluator's independently measured resource vector unless a separately audited host layer is added. The sandbox itself uses a finite tmpfs root, so local filesystem capacity is host-enforced within the sandbox, but this is not a claim about a global disk-I/O budget.
 
 ## Process isolation requirements
 
 Every capability/challenge execution must use a fresh Linux sandbox with:
 
 - user namespace with a root mapping only to the invoking evaluator UID/GID;
-- mount namespace;
+- private mount namespace with private propagation;
 - network namespace;
 - IPC namespace;
 - PID namespace;
 - private process group and parent-death termination;
-- private ephemeral chroot containing only the sealed executable;
+- bounded tmpfs execution root;
+- `pivot_root` followed by detachment of the old root;
 - no inherited environment beyond a minimal fixed environment;
 - statically linked ELF executable only.
 
-The sandbox intentionally provides no network interface connecting capability to challenge, no shared host `/tmp`, `/dev/shm`, user home, or arbitrary host filesystem, and no shared IPC namespace. Each execution receives a distinct ephemeral root directory destroyed after termination.
+The sandbox contains only the sealed executable at the fixed path `/payload`. The capability and challenge run in distinct fresh sandboxes. There is no shared host `/tmp`, `/dev/shm`, user home, or arbitrary host filesystem after the root transition, and no shared IPC namespace. Each execution receives a distinct mount namespace and bounded ephemeral root.
 
-The evaluator must fail closed if the host cannot create the required namespaces or the required cgroup contract.
+The evaluator must fail closed if the host cannot create the required namespaces, root transition, bounded filesystem, or cgroup contract.
 
 ## Hash blindness
 
-Artifact SHA-256 values are used only for commitment verification by the evaluator. The evaluator must never pass capability or challenge hashes, artifact filenames, target IDs, challenge ordering metadata, or other identifying metadata into child arguments, environment variables, or generic protocol frames.
+Artifact SHA-256 values are used only for commitment verification by the evaluator. The evaluator must never pass capability or challenge hashes, artifact hashes, target IDs, challenge ordering metadata, or other identifying metadata into child arguments, environment variables, filenames, mountpoints, or generic protocol frames.
 
-Inside the sandbox, the sealed executable is exposed only at the fixed path `/payload`. Capability and challenge are placed in distinct sandboxes, so neither side can observe the other's artifact path or filesystem.
+The evaluator may use random opaque host-side temporary names solely to stage sealed artifacts before namespace entry. Those names must contain no deterministic function of the challenge, family, target, plan, or artifact hash. Inside the sandbox the sealed executable is exposed only at `/payload`.
 
 ## Process rules
 
@@ -74,7 +75,7 @@ The evaluator must:
 8. bound artifact and mediated-output sizes externally;
 9. prevent capability-local state from crossing fresh challenge boundaries unless persistence is explicitly being tested;
 10. expose only aggregate scientific results to the learner harness;
-11. fail closed on malformed frames, hash mismatch, unexpected output, process failure/escape, namespace failure, cgroup failure, or resource overrun.
+11. fail closed on malformed frames, hash mismatch, unexpected output, process failure/escape, namespace failure, filesystem failure, cgroup failure, or resource overrun.
 
 ## Independence boundary
 
@@ -88,9 +89,9 @@ Admission still requires:
 
 - successful reproducible build;
 - exact frozen evaluator SHA-256;
-- evaluator-side adversarial tests;
+- evaluator-side adversarial tests that exercise the production sandbox path;
 - concrete semantic-independence audit;
-- independently audited Linux sandbox and cgroup configuration;
+- independently audited Linux namespace/filesystem and cgroup configuration;
 - review/approval by an auditor who did not implement the ACE learner/environment.
 
 No ACE source, binary, environment implementation, model implementation, learner state, or hidden ACE task semantics may be imported or reused by the evaluator.
