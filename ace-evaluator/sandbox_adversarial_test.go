@@ -26,6 +26,19 @@ func main() {
   if _, err := os.Stat("/proc/1"); err == nil { fmt.Println("host-proc-visible"); os.Exit(14) }
   if os.Getenv("ACE_CHALLENGE_HASH") != "" { fmt.Println("hash-env-visible"); os.Exit(15) }
   if err := os.WriteFile("/marker", []byte("sandbox"), 0600); err != nil { fmt.Println("marker-write-failed"); os.Exit(16) }
+
+  // The production sandbox must enforce a finite inode ceiling. We expect
+  // creation to fail before the host can be exhausted. A successful creation
+  // of every file is a containment failure, not a scientific result.
+  for i := 0; i < 2048; i++ {
+    name := fmt.Sprintf("/f-%04d", i)
+    if err := os.WriteFile(name, []byte{}, 0600); err != nil {
+      if i < 100 { fmt.Println("inode-limit-too-small"); os.Exit(17) }
+      return
+    }
+  }
+  fmt.Println("inode-limit-not-enforced")
+  os.Exit(18)
 }`
 
 func buildSandboxProbe(t *testing.T) string {
