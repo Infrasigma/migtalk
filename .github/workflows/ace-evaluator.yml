@@ -23,7 +23,7 @@ jobs:
         with:
           go-version: '1.24.6'
           cache-dependency-path: ace-evaluator/go.mod
-      - name: Test
+      - name: Test protocol unit suite
         run: go test ./...
       - name: Vet
         run: go vet ./...
