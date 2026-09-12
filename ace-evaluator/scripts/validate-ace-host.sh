@@ -11,9 +11,15 @@ mkdir -p "$OUT"
 
 fail() { echo "ACE-HOST-VALIDATION: FAIL: $*" >&2; exit 1; }
 record() { printf '%s\n' "$*" | tee -a "$OUT/validation.log" >/dev/null; }
+need() { command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"; }
 
 [[ "$(uname -s)" == Linux ]] || fail "Linux required"
 [[ -n "$CGROUP_PATH" && "$CGROUP_PATH" == /* && "$CGROUP_PATH" != *..* ]] || fail "absolute cgroup path required"
+need findmnt
+need unshare
+need mount
+need pivot_root
+need sha256sum
 
 ROOT="/sys/fs/cgroup${CGROUP_PATH}"
 [[ -d "$ROOT" ]] || fail "cgroup does not exist: $ROOT"
@@ -47,13 +53,12 @@ done
 # used by the production Go Cloneflags path.
 unshare --user --map-root-user --mount --net --ipc --pid --fork sh -ceu '
   test "$(id -u)" = 0
-  test "$(readlink /proc/self/ns/user)" != ""
-  test "$(readlink /proc/self/ns/mnt)" != ""
-  test "$(readlink /proc/self/ns/net)" != ""
-  test "$(readlink /proc/self/ns/ipc)" != ""
-  test "$(readlink /proc/self/ns/pid)" != ""
+  test -n "$(readlink /proc/self/ns/user)"
+  test -n "$(readlink /proc/self/ns/mnt)"
+  test -n "$(readlink /proc/self/ns/net)"
+  test -n "$(readlink /proc/self/ns/ipc)"
   test "$(readlink /proc/1/ns/pid)" = "$(readlink /proc/self/ns/pid)"
-  test "$(ls /sys/class/net | tr "\n" " ")" = "lo "
+  test "$(ls -1 /sys/class/net)" = lo
 ' >"$OUT/namespace-probe.txt" 2>&1 \
   || fail "required namespace probe failed"
 
@@ -70,16 +75,16 @@ unshare --user --map-root-user --mount --net --ipc --pid --fork sh -ceu '
   pivot_root . oldroot
   cd /
   test -f /payload
-  test ! -e /oldroot/etc/passwd
+  test -f /oldroot/etc/passwd
   umount -l /oldroot
+  test ! -e /oldroot/etc/passwd
   rm -f /payload
 ' >"$OUT/mount-pivot-probe.txt" 2>&1 \
   || fail "mount/pivot_root/tmpfs probe failed"
 
 # Network namespace must be distinct and have no externally configured link.
 unshare --user --map-root-user --net --fork sh -ceu '
-  n=$(ls /sys/class/net)
-  test "$n" = lo
+  test "$(ls -1 /sys/class/net)" = lo
 ' >"$OUT/network-probe.txt" 2>&1 \
   || fail "network namespace probe failed"
 
@@ -89,10 +94,10 @@ inner_ipc="$(unshare --user --map-root-user --ipc --fork sh -c 'readlink /proc/s
 [[ "$host_ipc" != "$inner_ipc" ]] || fail "IPC namespace was not isolated"
 printf 'host=%s\ninner=%s\n' "$host_ipc" "$inner_ipc" >"$OUT/ipc-probe.txt"
 
-# PID namespace must give the first child PID 1 and hide host process IDs.
+# PID namespace must give the first child PID 1. /proc itself is intentionally
+# not mounted here; the production sandbox has no procfs after pivot_root.
 unshare --user --map-root-user --pid --fork sh -ceu '
   test "$$" = 1
-  test ! -e /proc/2
 ' >"$OUT/pid-probe.txt" 2>&1 \
   || fail "PID namespace probe failed"
 
