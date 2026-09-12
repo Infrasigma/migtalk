@@ -3,6 +3,7 @@
 package main
 
 import (
+    "bytes"
     "context"
     "debug/elf"
     "errors"
@@ -15,7 +16,7 @@ import (
 const sandboxChildFlag = "--ace-sandbox-child"
 
 func validateStaticELF(b []byte) error {
-    f, err := elf.NewFile(bytesReader(b))
+    f, err := elf.NewFile(bytes.NewReader(b))
     if err != nil {
         return errors.New("capability/challenge must be a valid ELF executable")
     }
@@ -25,16 +26,6 @@ func validateStaticELF(b []byte) error {
         }
     }
     return nil
-}
-
-func bytesReader(b []byte) *byteReader { return &byteReader{data: b} }
-
-type byteReader struct { data []byte; off int }
-func (r *byteReader) Read(p []byte) (int, error) {
-    if r.off >= len(r.data) { return 0, fmt.Errorf("EOF") }
-    n := copy(p, r.data[r.off:])
-    r.off += n
-    return n, nil
 }
 
 func newSandboxedCommand(ctx context.Context, artifact []byte, hostArtifact string) (*exec.Cmd, func(), error) {
@@ -55,6 +46,8 @@ func newSandboxedCommand(ctx context.Context, artifact []byte, hostArtifact stri
         GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
         GidMappingsEnableSetgroups: false,
     }
+    // The sandbox child receives only an opaque random temporary artifact path.
+    // No challenge/family/artifact hash is included in argv, env, or filenames.
     cmd.Env = []string{
         "PATH=/usr/bin:/bin",
         "HOME=/",
