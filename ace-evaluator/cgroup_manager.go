@@ -36,15 +36,25 @@ func validateScientificCgroup() error {
     }
 
     root := filepath.Join("/sys/fs/cgroup", filepath.Clean(required))
-    for _, name := range []string{"cpu.max", "memory.max", "pids.max"} {
+    requiredFiles := []string{"cpu.max", "memory.max", "memory.swap.max", "pids.max"}
+    for _, name := range requiredFiles {
         b, err := os.ReadFile(filepath.Join(root, name))
         if err != nil {
             return fmt.Errorf("read %s: %w", name, err)
         }
         value := strings.TrimSpace(string(b))
-        if value == "max" || value == "max 100000" {
+        if value == "max" || strings.HasPrefix(value, "max ") {
             return fmt.Errorf("scientific cgroup has unlimited %s", name)
         }
     }
+
+    swap, err := os.ReadFile(filepath.Join(root, "memory.swap.max"))
+    if err != nil {
+        return fmt.Errorf("read memory.swap.max: %w", err)
+    }
+    if strings.TrimSpace(string(swap)) != "0" {
+        return fmt.Errorf("scientific cgroup must disable swap, memory.swap.max=%q", strings.TrimSpace(string(swap)))
+    }
+
     return nil
 }
