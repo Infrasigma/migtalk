@@ -14,7 +14,7 @@ func hash(b []byte) string {
 }
 
 func TestEvaluateMediatesOpaqueFrames(t *testing.T) {
-	capability := artifact("while IFS= read -r frame; do case \"$frame\" in *'\\\"kind\\\":\\\"observation\\\"'*) printf '%s\\n' '{\"kind\":\"action\",\"body\":{\"opaque\":true}}' ;; esac; done")
+	capability := artifact("while IFS= read -r frame; do printf '%s\\n' '{\"kind\":\"action\",\"body\":{\"opaque\":true}}'; done")
 	challenge := artifact("printf '%s\\n' '{\"kind\":\"observation\",\"body\":{\"opaque\":true}}'; IFS= read -r action; printf '%s\\n' '{\"kind\":\"result\",\"body\":{\"passed\":true}}'")
 	r := request{Protocol: protocol, Plan: "plan", Capability: capability, CapabilityHash: hash(capability), Challenge: challenge, ChallengeHash: hash(challenge), WallClockNS: 2_000_000_000, InteractionBudget: 1}
 	got := evaluateForTest(r)
