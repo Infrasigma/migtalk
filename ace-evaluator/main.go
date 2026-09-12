@@ -12,10 +12,13 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 )
 
 const protocol = "ACE-BLIND-2"
+const maxArtifactBytes = 16 << 20
+const maxChildOutputBytes = 16 << 20
 
 type frame struct {
 	Kind string          `json:"kind"`
@@ -44,6 +47,7 @@ func digest(b []byte) string { h := sha256.Sum256(b); return hex.EncodeToString(
 func validHash(got, want string) bool { return len(want) == 64 && strings.EqualFold(got, want) }
 
 func writeTempExecutable(b []byte) (string, error) {
+	if len(b) == 0 || len(b) > maxArtifactBytes { return "", errors.New("artifact size out of bounds") }
 	f, err := os.CreateTemp("", "ace-evaluator-artifact-*")
 	if err != nil { return "", err }
 	path := f.Name()
@@ -54,9 +58,22 @@ func writeTempExecutable(b []byte) (string, error) {
 	return path, nil
 }
 
+func startIsolated(cmd *exec.Cmd) error {
+	// Put each child in its own process group so timeout/failure cleanup can
+	// terminate descendants rather than leaving an escape process behind.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	return cmd.Start()
+}
+
+func killProcessGroup(cmd *exec.Cmd) {
+	if cmd.Process == nil { return }
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	_ = cmd.Process.Kill()
+}
+
 // runInteraction starts fresh capability and challenge processes for one
-// challenge. The evaluator interprets only frame kinds; observation, goal,
-// and action bodies remain opaque. The challenge executable is the semantic
+// challenge. The evaluator interprets only frame kinds; observation and
+// action bodies remain opaque. The challenge executable is the semantic
 // authority and initiates each episode by emitting an observation frame.
 func runInteraction(ctx context.Context, r request) (bool, uint64, error) {
 	capPath, err := writeTempExecutable(r.Capability)
@@ -73,12 +90,12 @@ func runInteraction(ctx context.Context, r request) (bool, uint64, error) {
 	chalIn, err := chalCmd.StdinPipe(); if err != nil { return false, 0, err }
 	chalOut, err := chalCmd.StdoutPipe(); if err != nil { return false, 0, err }
 	capCmd.Stderr = io.Discard; chalCmd.Stderr = io.Discard
-	if err := capCmd.Start(); err != nil { return false, 0, fmt.Errorf("start capability: %w", err) }
-	if err := chalCmd.Start(); err != nil { _ = capCmd.Process.Kill(); _ = capCmd.Wait(); return false, 0, fmt.Errorf("start challenge: %w", err) }
-	defer func() { _ = capIn.Close(); _ = chalIn.Close(); _ = capCmd.Process.Kill(); _ = chalCmd.Process.Kill(); _ = capCmd.Wait(); _ = chalCmd.Wait() }()
+	if err := startIsolated(capCmd); err != nil { return false, 0, fmt.Errorf("start capability: %w", err) }
+	if err := startIsolated(chalCmd); err != nil { killProcessGroup(capCmd); _ = capCmd.Wait(); return false, 0, fmt.Errorf("start challenge: %w", err) }
+	defer func() { _ = capIn.Close(); _ = chalIn.Close(); killProcessGroup(capCmd); killProcessGroup(chalCmd); _ = capCmd.Wait(); _ = chalCmd.Wait() }()
 
-	capDec := json.NewDecoder(bufio.NewReader(capOut)); capEnc := json.NewEncoder(capIn)
-	chalDec := json.NewDecoder(bufio.NewReader(chalOut)); chalEnc := json.NewEncoder(chalIn)
+	capDec := json.NewDecoder(io.LimitReader(bufio.NewReader(capOut), maxChildOutputBytes)); capEnc := json.NewEncoder(capIn)
+	chalDec := json.NewDecoder(io.LimitReader(bufio.NewReader(chalOut), maxChildOutputBytes)); chalEnc := json.NewEncoder(chalIn)
 	var interactions uint64
 
 	for {
