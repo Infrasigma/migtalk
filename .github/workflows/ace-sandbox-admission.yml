@@ -15,10 +15,10 @@ on:
 
 jobs:
   scientific-sandbox-admission:
-    # This job is intentionally separate from ordinary CI. It MUST run on a
-    # Linux runner where the precommitted cgroup-v2 contract is actually active.
-    # Do not replace this with a CI bypass when the host cannot satisfy it.
-    runs-on: ubuntu-latest
+    # Scientific admission must run only on an explicitly provisioned Linux host
+    # that can expose the required cgroup-v2 delegation. A standard GitHub-hosted
+    # runner is not an acceptable substitute for the frozen production contract.
+    runs-on: [self-hosted, linux, ace-cgroup-v2]
     defaults:
       run:
         working-directory: ace-evaluator
@@ -34,14 +34,17 @@ jobs:
           ACE_REQUIRE_CGROUP: '1'
           ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
         run: |
+          set -eu
           echo "Checking evaluator host cgroup contract"
           test -r /proc/self/cgroup
           test -d /sys/fs/cgroup
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cpu.max"
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.max"
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max"
+          test -r "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/pids.max"
+          grep -Fqx "0::${ACE_CGROUP_V2_PATH}" /proc/self/cgroup
+          test "$(cat "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max")" = "0"
           go test ./... -run 'TestValidateScientificCgroup' -count=1
-          if ! grep -q "0::${ACE_CGROUP_V2_PATH}$" /proc/self/cgroup; then
-            echo "SCIENTIFIC SANDBOX UNAVAILABLE: evaluator job is not running inside the requested cgroup"
-            exit 1
-          fi
 
       - name: Run production-path adversarial sandbox tests
         if: ${{ inputs.run_adversarial_tests }}
@@ -50,6 +53,7 @@ jobs:
           ACE_REQUIRE_CGROUP: '1'
           ACE_CGROUP_V2_PATH: ${{ inputs.cgroup_path }}
         run: |
+          set -eu
           CGO_ENABLED=0 go test ./... -run 'TestSandboxAdversarialFilesystemAndBlindness' -count=1 -v
 
       - name: Refuse scientific admission without verified boundary
