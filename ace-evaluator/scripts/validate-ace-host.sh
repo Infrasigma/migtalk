@@ -48,6 +48,19 @@ for f in /proc/sys/user/max_user_namespaces /proc/sys/kernel/unprivileged_userns
   if [[ -r "$f" ]]; then cat "$f" >>"$OUT/sysctls.txt"; fi
 done
 
+# Bind the evidence to the exact GitHub Actions execution when the workflow
+# supplies these values. They are metadata only; none is exposed to the agent.
+{
+  printf 'GITHUB_RUN_ID=%s\n' "${GITHUB_RUN_ID:-UNSET}"
+  printf 'GITHUB_RUN_ATTEMPT=%s\n' "${GITHUB_RUN_ATTEMPT:-UNSET}"
+  printf 'GITHUB_SHA=%s\n' "${GITHUB_SHA:-UNSET}"
+  printf 'GITHUB_JOB=%s\n' "${GITHUB_JOB:-UNSET}"
+  printf 'GITHUB_WORKFLOW=%s\n' "${GITHUB_WORKFLOW:-UNSET}"
+  printf 'GITHUB_REF=%s\n' "${GITHUB_REF:-UNSET}"
+  printf 'GITHUB_REPOSITORY=%s\n' "${GITHUB_REPOSITORY:-UNSET}"
+  printf 'UTC_START=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+} >"$OUT/workflow-metadata.txt"
+
 # Real kernel namespace admission. User namespaces are intentionally created
 # together with the dependent namespaces; this is the same privilege model
 # used by the production Go Cloneflags path.
@@ -113,6 +126,8 @@ if command -v git >/dev/null 2>&1 && git rev-parse --show-toplevel >/dev/null 2>
   git rev-parse HEAD:ace-evaluator >"$OUT/evaluator-tree.txt" 2>/dev/null || true
   git ls-files ace-evaluator | sort | xargs -r sha256sum >"$OUT/evaluator-source-sha256.txt"
 fi
+
+printf 'UTC_END=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$OUT/workflow-metadata.txt"
 
 sha256sum "$OUT"/* >"$OUT/SHA256SUMS"
 cat <<EOF | tee "$OUT/ADMISSION.txt"
