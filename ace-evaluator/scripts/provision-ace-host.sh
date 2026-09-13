@@ -79,7 +79,13 @@ runuser -u "$RUNNER_USER" -- unshare --user --map-root-user --mount --net --ipc 
   || fail "runner identity ${RUNNER_USER} cannot create required namespaces"
 
 CGROUP_PATH="$(systemctl show -p ControlGroup --value "$RUNNER_SERVICE")"
-[[ "$CGROUP_PATH" == /${SLICE}/* ]] || fail "runner is not inside ${SLICE}: ${CGROUP_PATH}"
+SYSTEMD_SLICE="$(systemctl show -p Slice --value "$RUNNER_SERVICE")"
+[[ "$SYSTEMD_SLICE" == "$SLICE" ]] || fail "runner is not assigned to ${SLICE}: ${SYSTEMD_SLICE}"
+# systemd derives a slice's parent hierarchy from its unit name. Because
+# ace-evaluator.slice contains a hyphen, its kernel path is normally nested as
+# /ace.slice/ace-evaluator.slice/.... The scientific invariant is membership
+# in the exact ace-evaluator.slice component, not a particular ancestor path.
+[[ "$CGROUP_PATH" == */${SLICE}/* ]] || fail "runner is not inside ${SLICE}: ${CGROUP_PATH}"
 
 ROOT="/sys/fs/cgroup${CGROUP_PATH}"
 [[ -r "$ROOT/cpu.max" ]] || fail "missing cpu.max at $ROOT"
