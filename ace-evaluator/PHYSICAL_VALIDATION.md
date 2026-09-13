@@ -19,16 +19,18 @@ sudo ACE_RUNNER_SERVICE=actions.runner.<owner>-<repo>.<runner>.service \
 
 The script creates `ace-evaluator.slice` with finite CPU, memory, swap, and PID ceilings, places the GitHub runner service into that slice, and refuses to continue if the kernel cannot create the required namespaces.
 
+Because systemd derives parent slices from slice-unit names, the kernel ControlGroup for `ace-evaluator.slice` is normally nested as `/ace.slice/ace-evaluator.slice/...`. This nesting is part of the normal systemd slice hierarchy; the admission invariant is membership in the exact `ace-evaluator.slice` component, not a hard-coded ancestor path.
+
 Runner registration is intentionally not automated: GitHub registration tokens are short-lived credentials and must be obtained through the repository's **Settings → Actions → Runners → New self-hosted runner** flow. After registration, install the runner as its systemd service and then run the provisioning script. GitHub documents both service installation and custom labels for self-hosted runners.
 
 The runner must have the custom label `ace-cgroup-v2` used by the scientific workflow.
 
 ## 3. Machine admission
 
-The provisioning script prints the runner service's exact cgroup path. Run:
+The provisioning script prints the runner service's exact cgroup path. Pass that exact path to the validator, for example:
 
 ```sh
-./ace-evaluator/scripts/validate-ace-host.sh /ace-evaluator.slice/<runner-service>.service
+./ace-evaluator/scripts/validate-ace-host.sh /ace.slice/ace-evaluator.slice/<runner-service>.service
 ```
 
 The probe records kernel/OS/cgroup/mount/namespace facts, tests user+mount+network+IPC+PID namespace creation, tests bounded tmpfs and `pivot_root` in a disposable namespace, verifies that the current process is in the declared cgroup, and writes a SHA-256 evidence manifest.
