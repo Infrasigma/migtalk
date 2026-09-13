@@ -81,11 +81,14 @@ runuser -u "$RUNNER_USER" -- unshare --user --map-root-user --mount --net --ipc 
 CGROUP_PATH="$(systemctl show -p ControlGroup --value "$RUNNER_SERVICE")"
 SYSTEMD_SLICE="$(systemctl show -p Slice --value "$RUNNER_SERVICE")"
 [[ "$SYSTEMD_SLICE" == "$SLICE" ]] || fail "runner is not assigned to ${SLICE}: ${SYSTEMD_SLICE}"
-# systemd derives a slice's parent hierarchy from its unit name. Because
-# ace-evaluator.slice contains a hyphen, its kernel path is normally nested as
-# /ace.slice/ace-evaluator.slice/.... The scientific invariant is membership
-# in the exact ace-evaluator.slice component, not a particular ancestor path.
 [[ "$CGROUP_PATH" == */${SLICE}/* ]] || fail "runner is not inside ${SLICE}: ${CGROUP_PATH}"
+
+# cgroup-v2 limits are hierarchical. The runner service cgroup may legitimately
+# read `max` because it delegates child management; the enforced resource cap is
+# defined by the ACE slice above it. Check that enforcing ancestor directly.
+source "$(dirname "$0")/check-cgroup-boundary.sh"
+ACE_SLICE_PATH="$(runner_slice_path "$CGROUP_PATH")"
+check_slice_limits "/sys/fs/cgroup${ACE_SLICE_PATH}" || fail "invalid ACE enforcing slice"
 
 ROOT="/sys/fs/cgroup${CGROUP_PATH}"
 [[ -r "$ROOT/cpu.max" ]] || fail "missing cpu.max at $ROOT"
@@ -94,10 +97,6 @@ ROOT="/sys/fs/cgroup${CGROUP_PATH}"
 [[ -r "$ROOT/pids.max" ]] || fail "missing pids.max at $ROOT"
 [[ -w "$ROOT/cgroup.procs" ]] || fail "runner cgroup is not writable by delegated runner service"
 [[ -w "$ROOT/cgroup.subtree_control" ]] || fail "runner cgroup does not expose delegated controller management"
-[[ "$(cat "$ROOT/memory.swap.max")" == 0 ]] || fail "swap is not disabled"
-[[ "$(awk '{print $1}' "$ROOT/memory.max")" != max ]] || fail "memory is unlimited"
-[[ "$(awk '{print $1}' "$ROOT/cpu.max")" != max ]] || fail "CPU is unlimited"
-[[ "$(awk '{print $1}' "$ROOT/pids.max")" != max ]] || fail "pids are unlimited"
 
 cat <<EOF
 ACE-HOST-BOOTSTRAP: PASS
@@ -105,10 +104,15 @@ runner_service=${RUNNER_SERVICE}
 runner_user=${RUNNER_USER}
 cgroup_path=${CGROUP_PATH}
 cgroup_root=${ROOT}
-cpu.max=$(cat "$ROOT/cpu.max")
-memory.max=$(cat "$ROOT/memory.max")
-memory.swap.max=$(cat "$ROOT/memory.swap.max")
-pids.max=$(cat "$ROOT/pids.max")
+ace_slice_path=${ACE_SLICE_PATH}
+ace_slice_cpu.max=$(cat "/sys/fs/cgroup${ACE_SLICE_PATH}/cpu.max")
+ace_slice_memory.max=$(cat "/sys/fs/cgroup${ACE_SLICE_PATH}/memory.max")
+ace_slice_memory.swap.max=$(cat "/sys/fs/cgroup${ACE_SLICE_PATH}/memory.swap.max")
+ace_slice_pids.max=$(cat "/sys/fs/cgroup${ACE_SLICE_PATH}/pids.max")
+runner_cpu.max=$(cat "$ROOT/cpu.max")
+runner_memory.max=$(cat "$ROOT/memory.max")
+runner_memory.swap.max=$(cat "$ROOT/memory.swap.max")
+runner_pids.max=$(cat "$ROOT/pids.max")
 delegate=yes
 workload_boundary=delegated-child-cgroup
 next=run ace-evaluator/scripts/validate-ace-host.sh ${CGROUP_PATH}
