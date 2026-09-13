@@ -20,7 +20,9 @@ child="$runner/ace-scientific-workload-test"
 write_limits "$slice" '100000 100000' '1073741824' '0' '256'
 write_limits "$runner" 'max 100000' 'max' 'max' '1649'
 
-ACE_CGROUP_ROOT="$ROOT" source "$(dirname "$0")/check-cgroup-boundary.sh"
+ACE_CGROUP_ROOT="$ROOT"
+export ACE_CGROUP_ROOT
+source "$(dirname "$0")/check-cgroup-boundary.sh"
 
 # Valid: finite enforcing ancestor + max runner leaf is intentionally accepted.
 check_runner_boundary '/ace.slice/ace-evaluator.slice/runner.service'
