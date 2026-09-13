@@ -44,10 +44,7 @@ jobs:
           test -w "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cgroup.procs"
           test -w "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cgroup.subtree_control"
           grep -Fqx "0::${ACE_CGROUP_V2_PATH}" /proc/self/cgroup
-          test "$(cat "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.swap.max")" = "0"
-          test "$(awk '{print $1}' "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/cpu.max")" != max
-          test "$(awk '{print $1}' "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/memory.max")" != max
-          test "$(awk '{print $1}' "/sys/fs/cgroup${ACE_CGROUP_V2_PATH}/pids.max")" != max
+          ACE_CGROUP_ROOT=/sys/fs/cgroup bash scripts/check-cgroup-boundary.sh check-runner "$ACE_CGROUP_V2_PATH"
           go test ./... -run 'TestValidateScientificCgroup' -count=1
 
       - name: Run machine-verifiable kernel admission probe
@@ -89,10 +86,17 @@ jobs:
           printf '%s' '0' > "$child/memory.swap.max"
           printf '%s' '256' > "$child/pids.max"
 
+          ACE_CGROUP_ROOT=/sys/fs/cgroup bash scripts/check-cgroup-boundary.sh \
+            check-workload "$ACE_CGROUP_V2_PATH" \
+            "${ACE_CGROUP_V2_PATH}/ace-scientific-workload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
           set +e
           (
             echo "$BASHPID" > "$child/cgroup.procs"
             test "$(awk -F: '$1 == \"0\" {print $3}' /proc/self/cgroup)" = "${ACE_CGROUP_V2_PATH}/ace-scientific-workload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            ACE_CGROUP_ROOT=/sys/fs/cgroup bash scripts/check-cgroup-boundary.sh \
+              check-workload "$ACE_CGROUP_V2_PATH" \
+              "${ACE_CGROUP_V2_PATH}/ace-scientific-workload-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             exec env \
               ACE_RUN_SANDBOX_TESTS="$ACE_RUN_SANDBOX_TESTS" \
               ACE_REQUIRE_CGROUP="$ACE_REQUIRE_CGROUP" \
