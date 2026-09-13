@@ -25,13 +25,18 @@ ROOT="/sys/fs/cgroup${CGROUP_PATH}"
 [[ -d "$ROOT" ]] || fail "cgroup does not exist: $ROOT"
 [[ "$(findmnt -n -o FSTYPE /sys/fs/cgroup)" == cgroup2 ]] || fail "cgroup v2 not mounted"
 
+# The runner service may expose `max` at its leaf cgroup because it delegates
+# child creation. The scientific resource contract is enforced by its direct
+# ace-evaluator.slice ancestor, so validate that ancestor rather than the leaf.
+source "$(dirname "$0")/check-cgroup-boundary.sh"
+ACE_SLICE_PATH="$(runner_slice_path "$CGROUP_PATH")"
+check_slice_limits "/sys/fs/cgroup${ACE_SLICE_PATH}" || fail "invalid ACE enforcing slice"
+
 for f in cpu.max memory.max memory.swap.max pids.max cgroup.procs; do
   [[ -r "$ROOT/$f" ]] || fail "missing $ROOT/$f"
 done
-[[ "$(cat "$ROOT/memory.swap.max")" == 0 ]] || fail "memory.swap.max is not 0"
-[[ "$(awk '{print $1}' "$ROOT/cpu.max")" != max ]] || fail "cpu.max is unlimited"
-[[ "$(awk '{print $1}' "$ROOT/memory.max")" != max ]] || fail "memory.max is unlimited"
-[[ "$(awk '{print $1}' "$ROOT/pids.max")" != max ]] || fail "pids.max is unlimited"
+[[ -w "$ROOT/cgroup.procs" ]] || fail "runner cgroup is not writable by delegated runner service"
+[[ -w "$ROOT/cgroup.subtree_control" ]] || fail "runner cgroup does not expose delegated controller management"
 
 # Capture immutable host facts before running kernel probes.
 uname -a >"$OUT/uname.txt"
@@ -47,6 +52,12 @@ for f in cpu.max memory.max memory.swap.max pids.max; do cat "$ROOT/$f" >"$OUT/$
 for f in /proc/sys/user/max_user_namespaces /proc/sys/kernel/unprivileged_userns_clone; do
   if [[ -r "$f" ]]; then cat "$f" >>"$OUT/sysctls.txt"; fi
 done
+
+# Capture the actual enforcing ACE slice limits separately from the runner leaf.
+for f in cpu.max memory.max memory.swap.max pids.max; do
+  cat "/sys/fs/cgroup${ACE_SLICE_PATH}/$f" >"$OUT/ace-slice-$f.txt"
+done
+printf '%s\n' "$ACE_SLICE_PATH" >"$OUT/ace-slice-path.txt"
 
 # Bind the evidence to the exact GitHub Actions execution when the workflow
 # supplies these values. They are metadata only; none is exposed to the agent.
@@ -115,7 +126,7 @@ unshare --user --map-root-user --pid --fork sh -ceu '
   || fail "PID namespace probe failed"
 
 # Verify that the current runner process really is the process in the declared
-# scientific cgroup. This prevents passing a sibling/parent cgroup by mistake.
+# scientific runner cgroup. This prevents passing a sibling/parent cgroup by mistake.
 grep -Fqx "0::${CGROUP_PATH}" /proc/self/cgroup \
   || fail "current process is not in requested cgroup: $(cat /proc/self/cgroup)"
 
@@ -133,7 +144,9 @@ sha256sum "$OUT"/* >"$OUT/SHA256SUMS"
 cat <<EOF | tee "$OUT/ADMISSION.txt"
 ACE_HOST_ADMISSION=PASS
 CGROUP_PATH=${CGROUP_PATH}
+ACE_SLICE_PATH=${ACE_SLICE_PATH}
 CGROUP_ROOT=${ROOT}
+ACE_SLICE_ROOT=/sys/fs/cgroup${ACE_SLICE_PATH}
 EVIDENCE_DIR=${OUT}
 EVIDENCE_SHA256=$(sha256sum "$OUT/SHA256SUMS" | awk '{print $1}')
 NOTE=This is host/kernel admission evidence only; scientific evaluator admission additionally requires production-path adversarial execution and independent audit.
