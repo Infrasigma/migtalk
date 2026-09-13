@@ -29,6 +29,8 @@ jobs:
         run: go vet ./...
       - name: Test cgroup path invariant
         run: bash scripts/test-cgroup-path.sh
+      - name: Test hierarchical cgroup boundary invariant
+        run: bash scripts/test-cgroup-boundary.sh
       - name: Build sealed evaluator
         run: CGO_ENABLED=0 go build -trimpath -buildvcs=false -o ace-evaluator
       - name: Record executable digest
