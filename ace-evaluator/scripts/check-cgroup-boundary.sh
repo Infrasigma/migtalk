@@ -56,6 +56,10 @@ check_runner_boundary() {
 check_workload_boundary() {
   local parent_path="$1"
   local child_path="$2"
+
+  local slice_path
+  slice_path="$(runner_slice_path "$parent_path")" || return 1
+
   [[ "$child_path" == "${parent_path}/ace-scientific-workload-"* ]] || { fail "workload child is not directly below declared parent: $child_path"; return 1; }
 
   local root="${ACE_CGROUP_ROOT}${child_path}"
@@ -72,7 +76,9 @@ check_workload_boundary() {
   [[ "$swap" == "$ACE_SWAP_MAX" ]] || { fail "unexpected workload memory.swap.max: $swap"; return 1; }
   [[ "$pids" == "$ACE_PIDS_MAX" ]] || { fail "unexpected workload pids.max: $pids"; return 1; }
 
-  check_slice_limits "${ACE_CGROUP_ROOT}${parent_path}"
+  # The runner leaf is deliberately allowed to be unlimited. The ACE slice is
+  # the resource-enforcing ancestor and remains the boundary we must validate.
+  check_slice_limits "${ACE_CGROUP_ROOT}${slice_path}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
