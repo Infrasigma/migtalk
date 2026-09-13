@@ -20,6 +20,7 @@ need unshare
 need mount
 need pivot_root
 need sha256sum
+need ip
 
 ROOT="/sys/fs/cgroup${CGROUP_PATH}"
 [[ -d "$ROOT" ]] || fail "cgroup does not exist: $ROOT"
@@ -37,6 +38,13 @@ for f in cpu.max memory.max memory.swap.max pids.max cgroup.procs; do
 done
 [[ -w "$ROOT/cgroup.procs" ]] || fail "runner cgroup is not writable by delegated runner service"
 [[ -w "$ROOT/cgroup.subtree_control" ]] || fail "runner cgroup does not expose delegated controller management"
+
+# Observe interface names from the kernel's netlink view, not sysfs.
+only_loopback_link_set() {
+  local links
+  links="$(ip -o link show | awk -F': ' '{name=$2; sub(/@.*/, "", name); print name}' | sort)"
+  [[ "$links" == "lo" ]]
+}
 
 # Capture immutable host facts before running kernel probes.
 uname -a >"$OUT/uname.txt"
@@ -81,8 +89,8 @@ unshare --user --map-root-user --mount --net --ipc --pid --fork sh -ceu '
   test -n "$(readlink /proc/self/ns/mnt)"
   test -n "$(readlink /proc/self/ns/net)"
   test -n "$(readlink /proc/self/ns/ipc)"
-  test "$(readlink /proc/1/ns/pid)" = "$(readlink /proc/self/ns/pid)"
-  test "$(ls -1 /sys/class/net)" = lo
+  test "$$" = 1
+  test "$(ip -o link show | awk -F'"'': ''"'"' '{name=$2; sub(/@.*/, "", name); print name}' | sort)" = lo
 ' >"$OUT/namespace-probe.txt" 2>&1 \
   || fail "required namespace probe failed"
 
@@ -108,7 +116,7 @@ unshare --user --map-root-user --mount --net --ipc --pid --fork sh -ceu '
 
 # Network namespace must be distinct and have no externally configured link.
 unshare --user --map-root-user --net --fork sh -ceu '
-  test "$(ls -1 /sys/class/net)" = lo
+  test "$(ip -o link show | awk -F'"'': ''"'"' '{name=$2; sub(/@.*/, "", name); print name}' | sort)" = lo
 ' >"$OUT/network-probe.txt" 2>&1 \
   || fail "network namespace probe failed"
 
@@ -119,7 +127,7 @@ inner_ipc="$(unshare --user --map-root-user --ipc --fork sh -c 'readlink /proc/s
 printf 'host=%s\ninner=%s\n' "$host_ipc" "$inner_ipc" >"$OUT/ipc-probe.txt"
 
 # PID namespace must give the first child PID 1. /proc itself is intentionally
-# not mounted here; the production sandbox has no procfs after pivot_root.
+# not mounted here; PID identity is proved directly from the new namespace.
 unshare --user --map-root-user --pid --fork sh -ceu '
   test "$$" = 1
 ' >"$OUT/pid-probe.txt" 2>&1 \
