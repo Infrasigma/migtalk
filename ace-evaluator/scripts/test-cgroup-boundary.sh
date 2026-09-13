@@ -24,18 +24,23 @@ ACE_CGROUP_ROOT="$ROOT"
 export ACE_CGROUP_ROOT
 source "$(dirname "$0")/check-cgroup-boundary.sh"
 
-# Valid: finite enforcing ancestor + max runner leaf is intentionally accepted.
+# Valid: finite enforcing ancestor + intentionally unlimited runner leaf.
 check_runner_boundary '/ace.slice/ace-evaluator.slice/runner.service'
 
-# Valid workload boundary: explicit child limits plus finite ancestor.
+# Valid: exact finite workload child under the intentionally unlimited runner.
 mkdir -p "$child"
 write_limits "$child" '100000 100000' '1073741824' '0' '256'
 check_workload_boundary '/ace.slice/ace-evaluator.slice/runner.service' '/ace.slice/ace-evaluator.slice/runner.service/ace-scientific-workload-test'
 
-# Invalid: ancestor without finite CPU limit must fail despite the runner leaf being finite.
+# Invalid: ACE ancestor without finite CPU limit must fail even though the
+# runner and workload paths remain otherwise valid.
 printf '%s\n' 'max 100000' >"$slice/cpu.max"
 if check_runner_boundary '/ace.slice/ace-evaluator.slice/runner.service'; then
   echo 'expected unconstrained ancestor rejection' >&2
+  exit 1
+fi
+if check_workload_boundary '/ace.slice/ace-evaluator.slice/runner.service' '/ace.slice/ace-evaluator.slice/runner.service/ace-scientific-workload-test'; then
+  echo 'expected unconstrained ancestor rejection through workload path' >&2
   exit 1
 fi
 printf '%s\n' '100000 100000' >"$slice/cpu.max"
@@ -58,13 +63,22 @@ if check_runner_boundary '/ace.slice/ace-evaluator.slice/runner.service'; then
   echo 'expected ancestor swap rejection' >&2
   exit 1
 fi
-
-# Restore and verify the workload-specific boundary rejects an incorrect child limit.
+if check_workload_boundary '/ace.slice/ace-evaluator.slice/runner.service' '/ace.slice/ace-evaluator.slice/runner.service/ace-scientific-workload-test'; then
+  echo 'expected ancestor swap rejection through workload path' >&2
+  exit 1
+fi
 printf '%s\n' '0' >"$slice/memory.swap.max"
+
+# Invalid: incorrect workload child limit must fail while the ACE ancestor
+# and unlimited runner remain valid.
 printf '%s\n' 'max' >"$child/memory.max"
 if check_workload_boundary '/ace.slice/ace-evaluator.slice/runner.service' '/ace.slice/ace-evaluator.slice/runner.service/ace-scientific-workload-test'; then
   echo 'expected workload limit rejection' >&2
   exit 1
 fi
+printf '%s\n' '1073741824' >"$child/memory.max"
+
+# Valid again after restoring the exact workload boundary.
+check_workload_boundary '/ace.slice/ace-evaluator.slice/runner.service' '/ace.slice/ace-evaluator.slice/runner.service/ace-scientific-workload-test'
 
 echo 'cgroup hierarchical boundary regression tests: PASS'
