@@ -39,13 +39,6 @@ done
 [[ -w "$ROOT/cgroup.procs" ]] || fail "runner cgroup is not writable by delegated runner service"
 [[ -w "$ROOT/cgroup.subtree_control" ]] || fail "runner cgroup does not expose delegated controller management"
 
-# Observe interface names from the kernel's netlink view, not sysfs.
-only_loopback_link_set() {
-  local links
-  links="$(ip -o link show | awk -F': ' '{name=$2; sub(/@.*/, "", name); print name}' | sort)"
-  [[ "$links" == "lo" ]]
-}
-
 # Capture immutable host facts before running kernel probes.
 uname -a >"$OUT/uname.txt"
 cat /etc/os-release >"$OUT/os-release.txt"
@@ -90,7 +83,7 @@ unshare --user --map-root-user --mount --net --ipc --pid --fork sh -ceu '
   test -n "$(readlink /proc/self/ns/net)"
   test -n "$(readlink /proc/self/ns/ipc)"
   test "$$" = 1
-  test "$(ip -o link show | awk -F'"'': ''"'"' '{name=$2; sub(/@.*/, "", name); print name}' | sort)" = lo
+  test "$(ip -o link show | sed -nE "s/^[0-9]+: ([^:]+):.*/\1/p" | sed "s/@.*//" | sort)" = lo
 ' >"$OUT/namespace-probe.txt" 2>&1 \
   || fail "required namespace probe failed"
 
@@ -116,7 +109,7 @@ unshare --user --map-root-user --mount --net --ipc --pid --fork sh -ceu '
 
 # Network namespace must be distinct and have no externally configured link.
 unshare --user --map-root-user --net --fork sh -ceu '
-  test "$(ip -o link show | awk -F'"'': ''"'"' '{name=$2; sub(/@.*/, "", name); print name}' | sort)" = lo
+  test "$(ip -o link show | sed -nE "s/^[0-9]+: ([^:]+):.*/\1/p" | sed "s/@.*//" | sort)" = lo
 ' >"$OUT/network-probe.txt" 2>&1 \
   || fail "network namespace probe failed"
 
