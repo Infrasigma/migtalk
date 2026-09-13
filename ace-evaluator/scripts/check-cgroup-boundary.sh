@@ -6,6 +6,7 @@ ACE_CPU_MAX="100000 100000"
 ACE_MEMORY_MAX="1073741824"
 ACE_SWAP_MAX="0"
 ACE_PIDS_MAX="256"
+ACE_CGROUP_ROOT="${ACE_CGROUP_ROOT:-/sys/fs/cgroup}"
 
 fail() {
   echo "ACE-CGROUP-BOUNDARY: FAIL: $*" >&2
@@ -49,7 +50,7 @@ check_runner_boundary() {
   local runner_path="$1"
   local slice_path
   slice_path="$(runner_slice_path "$runner_path")"
-  check_slice_limits "/sys/fs/cgroup${slice_path}"
+  check_slice_limits "${ACE_CGROUP_ROOT}${slice_path}"
 }
 
 check_workload_boundary() {
@@ -57,7 +58,7 @@ check_workload_boundary() {
   local child_path="$2"
   [[ "$child_path" == "${parent_path}/ace-scientific-workload-"* ]] || fail "workload child is not directly below declared parent: $child_path"
 
-  local root="/sys/fs/cgroup${child_path}"
+  local root="${ACE_CGROUP_ROOT}${child_path}"
   [[ -d "$root" ]] || fail "workload cgroup does not exist: $root"
 
   local cpu memory swap pids
@@ -71,7 +72,7 @@ check_workload_boundary() {
   [[ "$swap" == "$ACE_SWAP_MAX" ]] || fail "unexpected workload memory.swap.max: $swap"
   [[ "$pids" == "$ACE_PIDS_MAX" ]] || fail "unexpected workload pids.max: $pids"
 
-  check_slice_limits "/sys/fs/cgroup${parent_path}"
+  check_slice_limits "${ACE_CGROUP_ROOT}${parent_path}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
