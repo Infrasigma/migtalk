@@ -74,18 +74,20 @@ check_workload_boundary() {
   check_slice_limits "/sys/fs/cgroup${parent_path}"
 }
 
-case "${1:-}" in
-  check-runner)
-    [[ $# -eq 2 ]] || fail "usage: $0 check-runner <runner-cgroup-path>"
-    check_runner_boundary "$2"
-    ;;
-  check-workload)
-    [[ $# -eq 3 ]] || fail "usage: $0 check-workload <parent-cgroup-path> <child-cgroup-path>"
-    check_workload_boundary "$2" "$3"
-    ;;
-  *)
-    fail "usage: $0 {check-runner|check-workload} ..."
-    ;;
-esac
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    check-runner)
+      [[ $# -eq 2 ]] || fail "usage: $0 check-runner <runner-cgroup-path>"
+      check_runner_boundary "$2"
+      ;;
+    check-workload)
+      [[ $# -eq 3 ]] || fail "usage: $0 check-workload <parent-cgroup-path> <child-cgroup-path>"
+      check_workload_boundary "$2" "$3"
+      ;;
+    *)
+      fail "usage: $0 {check-runner|check-workload} ..."
+      ;;
+  esac
 
-echo "ACE-CGROUP-BOUNDARY: PASS"
+  echo "ACE-CGROUP-BOUNDARY: PASS"
+fi
