@@ -8,11 +8,30 @@ link_names() {
   ip -o link show | sed -nE 's/^[0-9]+: ([^:]+):.*/\1/p' | sed 's/@.*//' | sort
 }
 
+SCRIPT_DIR="$(dirname "$0")"
+VALIDATOR="$SCRIPT_DIR/validate-ace-host.sh"
+
+# Hosted CI must not be treated as a substitute for the physical Linux kernel
+# admission environment. Static mode verifies the production probe source and
+# shell syntax; the real namespace operations are exercised by validate-ace-host.sh
+# in the dedicated self-hosted physical-admission workflow.
+if [[ "${1:-}" == "--static" ]]; then
+  bash -n "$VALIDATOR"
+  grep -Fq 'unshare --user --map-root-user --mount --net --ipc --pid --fork' "$VALIDATOR"
+  grep -Fq 'test "$$" = 1' "$VALIDATOR"
+  grep -Fq 'ip -o link show' "$VALIDATOR"
+  grep -Fq 'pivot_root' "$VALIDATOR"
+  printf '%s\n' 'namespace admission static checks: PASS'
+  exit 0
+fi
+
+[[ $# -eq 0 ]] || { echo "usage: $0 [--static]" >&2; exit 1; }
+
 # Positive: a fresh network namespace must contain exactly loopback.
 unshare --user --map-root-user --net --fork sh -ceu '
   links="$(ip -o link show | sed -nE "s/^[0-9]+: ([^:]+):.*/\1/p" | sed "s/@.*//" | sort)"
   test "$links" = lo
-' 
+'
 
 # Negative: if an additional kernel interface exists, the exact admission
 # predicate must reject the namespace. The dummy interface is created inside
@@ -43,8 +62,4 @@ unshare --user --map-root-user --mount --net --ipc --pid --fork sh -ceu '
   test "$links" = lo
 '
 
-# Syntax check the admission script itself so malformed shell quoting cannot
-# reach the physical host.
-bash -n "$(dirname "$0")/validate-ace-host.sh"
-
-printf '%s\n' 'namespace admission regression tests: PASS'
+printf '%s\n' 'namespace admission runtime probes: PASS'
